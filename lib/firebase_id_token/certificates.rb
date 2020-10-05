@@ -1,22 +1,22 @@
 module FirebaseIdToken
   # Manage download and access of Google's x509 certificates. Keeps
-  # certificates on a Redis namespace database.
+  # certificates in thread-safe memory.
   #
   # ## Download & Access Certificates
   #
   # It describes two ways to download it: {.request} and {.request!}.
-  # The first will only do something when Redis certificates database is empty,
+  # The first will only do something when the certificates cache is empty,
   # the second one will always request a new download to Google's API and
   # override the database with the response.
   #
   # It's important to note that when saving a set of certificates, it will also
-  # set a Redis expiration time to match Google's API header `expires`. **After
-  # this time went out, Redis will automatically delete those certificates.**
+  # set an expiration time to match Google's API header `expires`. **After
+  # this time went out, it will automatically request new certificates.**
   #
   # *To know how many seconds left until the expiration you can use {.ttl}.*
   #
   # When comes to accessing it, you can either use {.present?} to check if
-  # there's any data inside Redis certificates database or {.all} to obtain an
+  # there's any data inside the certificates cache or {.all} to obtain an
   # `Array` of current certificates.
   #
   # @example `.request` will only download once
@@ -30,16 +30,29 @@ module FirebaseIdToken
   #   FirebaseIdToken::Certificates.request! # Downloads certificates.
   #
   class Certificates
-    # A Redis instance.
-    attr_reader :redis
-    # Certificates saved in the Redis (JSON `String` or `nil`).
+    # Certificates cached locally (JSON `String` or `nil`).
     attr_reader :local_certs
+
+    @@mutex = Mutex.new
+    @@local_certs = {}
+    @@local_certs_requested_at = Time.now
+    @@local_certs_ttl = 0
 
     # Google's x509 certificates API URL.
     URL = 'https://www.googleapis.com/robot/v1/metadata/x509/'\
       'securetoken@system.gserviceaccount.com'
 
-    # Calls {.request!} only if there are no certificates on Redis. It will
+    def self.reset
+      @@local_certs = {}
+      @@local_certs_requested_at = Time.now
+      @@local_certs_ttl = 0
+    end
+
+    # For testing
+    @@request_count = 0
+    def self.request_count; @@request_count; end
+
+    # Calls {.request!} only if there are no certificates cache. It will
     # return `nil` otherwise.
     #
     # It will raise {Exceptions::CertificatesRequestError} if the request
@@ -53,7 +66,7 @@ module FirebaseIdToken
     end
 
     # Triggers a HTTPS request to Google's x509 certificates API. If it
-    # responds with a status `200 OK`, saves the request body into Redis and
+    # responds with a status `200 OK`, saves the request body locally and
     # returns it as a `Hash`.
     #
     # Otherwise it will raise a {Exceptions::CertificatesRequestError}.
@@ -76,7 +89,7 @@ module FirebaseIdToken
       new.request!
     end
 
-    # Returns `true` if there's certificates data on Redis, `false` otherwise.
+    # Returns `true` if there's certificates data in the cache, `false` otherwise.
     # @example
     #   FirebaseIdToken::Certificates.present? #=> false
     #   FirebaseIdToken::Certificates.request
@@ -88,8 +101,7 @@ module FirebaseIdToken
     # Returns an array of hashes, each hash is a single `{key => value}` pair
     # containing the certificate KID `String` as key and a
     # `OpenSSL::X509::Certificate` object of the respective certificate as
-    # value. Returns a empty `Array` when there's no certificates data on
-    # Redis.
+    # value. Returns a empty `Array` when there's no certificates data in cache.
     # @return [Array]
     # @example
     #   FirebaseIdToken::Certificates.request
@@ -103,8 +115,8 @@ module FirebaseIdToken
     # Returns a `OpenSSL::X509::Certificate` object of the requested Key ID
     # (KID) if there's one. Returns `nil` otherwise.
     #
-    # It will raise a {Exceptions::NoCertificatesError} if the Redis
-    # certificates database is empty.
+    # It will raise a {Exceptions::NoCertificatesError} if the
+    # certificates cache is empty.
     # @param [String] kid Key ID
     # @return [nil, OpenSSL::X509::Certificate]
     # @example
@@ -128,8 +140,8 @@ module FirebaseIdToken
     #
     # @raise {Exceptions::CertificateNotFound} if it cannot be found.
     #
-    # @raise {Exceptions::NoCertificatesError} if the Redis certificates
-    # database is empty.
+    # @raise {Exceptions::NoCertificatesError} if the certificates cache
+    # is empty.
     #
     # @param [String] kid Key ID
     # @return [OpenSSL::X509::Certificate]
@@ -146,44 +158,53 @@ module FirebaseIdToken
     # time, use it to know when to request again.
     # @return [Fixnum]
     def self.ttl
-      ttl = new.redis.ttl('certificates')
+      ttl = @@local_certs_ttl
       ttl < 0 ? 0 : ttl
     end
 
-    # Sets two instance attributes: `:redis` and `:local_certs`. Those are
-    # respectively a Redis instance from {FirebaseIdToken::Configuration} and
-    # the certificates in it.
     def initialize
-      @redis = Redis::Namespace.new('firebase_id_token',
-        redis: FirebaseIdToken.configuration.redis)
       @local_certs = read_certificates
     end
 
     # @see Certificates.request
     def request
-      request! if @local_certs.empty?
+      request! if @local_certs.nil? || @local_certs.empty?
     end
 
     # @see Certificates.request!
     def request!
-      @request = HTTParty.get URL
-      code = @request.code
-      if code == 200
-        save_certificates
-      else
-        raise Exceptions::CertificatesRequestError.new(code)
+      if @@mutex.locked?
+        # Another thread is currently updating the certs.
+        # We want to wait until it's done,
+        # BUT we don't want to make another (redundant) request ourself.
+        return @@mutex.synchronize do
+          @local_certs = read_certificates
+        end
+      end
+
+      @@mutex.synchronize do
+        @@local_certs_requested_at = Time.now
+        @@request_count += 1
+
+        @request = HTTParty.get URL
+        code = @request.code
+        if code == 200
+          save_certificates
+        else
+          raise Exceptions::CertificatesRequestError.new(code)
+        end
       end
     end
 
     private
 
     def read_certificates
-      certs = @redis.get 'certificates'
-      certs ? JSON.parse(certs) : {}
+      Time.now < (@@local_certs_requested_at + @@local_certs_ttl) && @@local_certs || {}
     end
 
     def save_certificates
-      @redis.setex 'certificates', ttl, @request.body
+      @@local_certs = JSON.parse(@request.body)
+      @@local_certs_ttl = ttl
       @local_certs = read_certificates
     end
 

@@ -8,6 +8,7 @@ require 'httparty'
 require 'jwt'
 require 'firebase_id_token'
 require 'pry'
+require 'timecop'
 
 RSpec.configure do |config|
   # Enable flags like --only-failures and --next-failure

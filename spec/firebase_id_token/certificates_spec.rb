@@ -2,7 +2,6 @@ require 'spec_helper'
 
 module FirebaseIdToken
   describe Certificates do
-    let (:redis) { Redis::Namespace.new 'firebase_id_token', redis: Redis.new }
     let (:certs) { File.read('spec/fixtures/files/certificates.json') }
     let (:cache) { 'public, max-age=19302, must-revalidate, no-transform' }
     let (:low_cache) { 'public, max-age=2160, must-revalidate, no-transform' }
@@ -23,18 +22,18 @@ module FirebaseIdToken
     }
 
     before :each do
-      redis.del 'certificates'
+      described_class.reset
       mock_request
     end
 
     describe '#request' do
-      it 'requests certificates when Redis database is empty' do
+      it 'requests certificates when local cache is empty' do
         expect(HTTParty).to receive(:get).
           with(FirebaseIdToken::Certificates::URL)
         described_class.request
       end
 
-      it 'does not requests certificates when Redis database is written' do
+      it 'does not requests certificates when local cache is written' do
         expect(HTTParty).to receive(:get).
           with(FirebaseIdToken::Certificates::URL).once
         2.times { described_class.request }
@@ -48,9 +47,10 @@ module FirebaseIdToken
         2.times { described_class.request! }
       end
 
-      it 'sets the certificate expiration time as Redis TTL' do
+      it 'sets the certificate expiration time' do
         described_class.request!
-        expect(redis.ttl('certificates')).to be > 3600
+        ttl = FirebaseIdToken::Certificates.ttl
+        expect(ttl).to be(19302)
       end
 
       it 'raises a error when certificates expires in less than 1 hour' do
@@ -76,11 +76,11 @@ module FirebaseIdToken
     end
 
     describe '.present?' do
-      it 'returns false when Redis database is empty' do
+      it 'returns false when local cache is empty' do
         expect(described_class.present?).to be(false)
       end
 
-      it 'returns true when Redis database is written' do
+      it 'returns true when local cache is written' do
         described_class.request
         expect(described_class.present?).to be(true)
       end
@@ -108,14 +108,14 @@ module FirebaseIdToken
     end
 
     describe '.find' do
-      context 'without certificates in Redis database' do
+      context 'without certificates in local cache' do
         it 'raises a exception' do
           expect{ described_class.find(kid)}.
             to raise_error(Exceptions::NoCertificatesError)
         end
       end
 
-      context 'with certificates in Redis database' do
+      context 'with certificates in local cache' do
         it 'returns a OpenSSL::X509::Certificate when it finds the kid' do
           described_class.request
           expect(described_class.find(kid)).to be_a(OpenSSL::X509::Certificate)
@@ -129,13 +129,13 @@ module FirebaseIdToken
     end
 
     describe '.find!' do
-      context 'without certificates in Redis database' do
+      context 'without certificates in local cache' do
         it 'raises a exception' do
           expect{ described_class.find!(kid)}.
             to raise_error(Exceptions::NoCertificatesError)
         end
       end
-      context 'with certificates in Redis database' do
+      context 'with certificates in local cache' do
         it 'returns a OpenSSL::X509::Certificate when it finds the kid' do
           described_class.request
           expect(described_class.find!(kid)).to be_a(OpenSSL::X509::Certificate)
@@ -151,14 +151,73 @@ module FirebaseIdToken
     end
 
     describe '.ttl' do
-      it 'returns a positive number when has certificates in Redis' do
+      it 'returns a positive number when has certificates cached' do
+        expect(HTTParty).to receive(:get).with(FirebaseIdToken::Certificates::URL).once
         described_class.request
         expect(described_class.ttl).to be > 0
       end
 
-      it 'returns zero when has no certificates in Redis' do
+      it 'expiration allows another request' do
+        expect(HTTParty).to receive(:get).with(FirebaseIdToken::Certificates::URL).twice
+        described_class.request
+        expect(described_class.new.local_certs.empty?).to eq(false)
+
+        Timecop.travel(Time.now + described_class.ttl + 1) do
+          described_class.request
+          expect(described_class.new.local_certs.empty?).to eq(false)
+          described_class.request
+          expect(described_class.new.local_certs.empty?).to eq(false)
+        end
+      end
+
+      it 'returns zero when has no certificates cached' do
         expect(described_class.ttl).to eq(0)
       end
     end
+
+    describe 'memory safety' do
+      before do
+        if Thread.respond_to?(:report_on_exception)
+          @report_on_exception_value = Thread.report_on_exception
+          Thread.report_on_exception = false
+        end
+
+        described_class.reset
+      end
+
+      def request_threaded(nthreads)
+        threads = []
+
+        nthreads.times do
+          threads << Thread.new do
+            described_class.request!
+          end
+        end
+        threads.map(&:join)
+      end
+
+      it "only makes one request per batch" do
+        allow(HTTParty).to receive(:get).with(an_instance_of(String)) do
+          sleep 0.2
+          response
+        end
+
+        orig_count = described_class.request_count
+
+        t = Time.now
+        expect { request_threaded(100) }.to_not raise_error
+        expect(Time.now).to be > (t + 0.2)
+        expect(Time.now).to be < (t + 0.3)
+
+        expect(described_class.request_count).to eq(orig_count + 1)
+      end
+
+      after do
+        if Thread.respond_to?(:report_on_exception)
+          Thread.report_on_exception = @report_on_exception_value
+        end
+      end
+    end
+
   end
 end
