@@ -6,15 +6,15 @@ require 'firebase_id_token/version'
 Gem::Specification.new do |spec|
   spec.name          = 'firebase_id_token'
   spec.version       = FirebaseIdToken::VERSION
-  spec.authors       = ['Fernando Schuindt']
-  spec.email         = ['f.schuindtcs@gmail.com']
+  spec.authors       = ['Fernando Schuindt', 'Gilbert']
+  spec.email         = ['f.schuindtcs@gmail.com', 'gilbertbgarza@gmail.com']
 
   spec.summary       = 'A Firebase ID Token verifier.'
   spec.description   = "A Ruby gem to verify the signature of Firebase ID "\
-    "Tokens. It uses Redis to store Google's x509 certificates and manage "\
+    "Tokens. It uses stores Google's x509 certificates in-memory and manages "\
     "their expiration time, so you don't need to request Google's API in "\
     "every execution and can access it as fast as reading from memory."
-  spec.homepage      = 'https://github.com/fschuindt/firebase_id_token'
+  spec.homepage      = 'https://github.com/gilbert/firebase_id_token'
   spec.license       = 'MIT'
 
   spec.files         = `git ls-files -z`.split("\x0")
@@ -31,8 +31,6 @@ Gem::Specification.new do |spec|
   spec.add_development_dependency 'pry', '~> 0.12.2'
   spec.add_development_dependency 'timecop', '~> 0.9.1'
 
-  spec.add_runtime_dependency 'redis', '~> 4.0', '>= 4.0.1'
-  spec.add_runtime_dependency 'redis-namespace', '~> 1.6', '>= 1.6.0'
   spec.add_dependency 'httparty', '~> 0.16', '>= 0.16.2'
   spec.add_runtime_dependency 'jwt', '~> 2.1', '>= 2.1.0'
 end

@@ -2,8 +2,6 @@ require 'simplecov'
 SimpleCov.start
 
 require 'bundler/setup'
-require 'redis'
-require 'redis-namespace'
 require 'httparty'
 require 'jwt'
 require 'firebase_id_token'

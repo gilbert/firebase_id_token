@@ -44,7 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Started to use [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Runtime dependencies versions upgraded.
-- Use Redis `>= 3.3.3`.
 
 ## [2.2.0] - 2018-05-21
 *Nothing tracked, release skipped.*

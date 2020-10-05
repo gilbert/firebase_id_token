@@ -15,19 +15,5 @@ module FirebaseIdToken
         expect(config.project_ids).to be_a(String)
       end
     end
-
-    describe '.redis' do
-      it 'sets a Redis instance as default' do
-        expect(Configuration.new.redis).to be_a(Redis)
-      end
-    end
-
-    describe '.redis=' do
-      it 'changes default values' do
-        config = Configuration.new
-        config.redis = String.new
-        expect(config.redis).to be_a(String)
-      end
-    end
   end
 end
